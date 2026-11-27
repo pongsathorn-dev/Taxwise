@@ -34,7 +34,13 @@ jobs:
           VITE_FIREBASE_PROJECT_ID: ${{ vars.VITE_FIREBASE_PROJECT_ID }}
           VITE_FIREBASE_APP_ID: ${{ vars.VITE_FIREBASE_APP_ID }}
           VITE_FIREBASE_ADMIN_EMAIL: ${{ vars.VITE_FIREBASE_ADMIN_EMAIL }}
-        run: node -e "for (const k of ['VITE_FIREBASE_API_KEY','VITE_FIREBASE_AUTH_DOMAIN','VITE_FIREBASE_PROJECT_ID','VITE_FIREBASE_APP_ID','VITE_FIREBASE_ADMIN_EMAIL']) if (!process.env[k]) { console.error('Missing GitHub Actions variable: '+k); process.exit(1) }"
+        run: |
+          for name in VITE_FIREBASE_API_KEY VITE_FIREBASE_AUTH_DOMAIN VITE_FIREBASE_PROJECT_ID VITE_FIREBASE_APP_ID VITE_FIREBASE_ADMIN_EMAIL; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Missing GitHub Actions variable: $name"
+              exit 1
+            fi
+          done
       - name: Build site
         working-directory: frontend
         env:
