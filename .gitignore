@@ -1,0 +1,16 @@
+node_modules/
+dist/
+*.tsbuildinfo
+__pycache__/
+.pytest_cache/
+.venv/
+backend/.packages/
+backend/.venv/
+work/python-runtime/
+work/pip-tmp/
+work/npm-cache/
+*.py[cod]
+*.xlsx
+.env
+
+backend/data/*.db
