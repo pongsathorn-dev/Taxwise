@@ -127,20 +127,33 @@ function App() {
   async function ownerLogout() { await signOutOwner(); }
   async function exportXlsx() {
     if (!result) return;
-    const ExcelJS = await import('exceljs');
-    const workbook = new ExcelJS.Workbook();
-    const sheet = workbook.addWorksheet('ผลเปรียบเทียบ');
-    sheet.addRow(['Tax Data Comparison', `${result.label_a} เทียบกับ ${result.label_b}`]);
-    sheet.addRow(['ชื่อผู้มีหน้าที่หัก', 'ประเภทเงินได้', `ยอดเงิน ${result.label_a}`, `ยอดเงิน ${result.label_b}`, 'ผลต่างเงินได้', `ภาษี ${result.label_a}`, `ภาษี ${result.label_b}`, 'ผลต่างภาษี', 'สถานะ']);
-    for (const item of result.items) sheet.addRow([item.payer, item.income_type, item.a_amount, item.b_amount, item.amount_diff, item.a_tax, item.b_tax, item.tax_diff, item.status]);
-    sheet.views = [{ state: 'frozen', ySplit: 2 }];
-    sheet.autoFilter = { from: 'A2', to: `I${sheet.rowCount}` };
-    sheet.columns.forEach((column) => { column.width = Math.min(34, Math.max(14, ...column.values!.map((value) => String(value ?? '').length + 2))); });
-    for (let rowNumber = 1; rowNumber <= 2; rowNumber++) sheet.getRow(rowNumber).eachCell((cell) => { cell.font = { bold: true, color: { argb: 'FFFFFFFF' } }; cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: rowNumber === 1 ? 'FF163B35' : 'FF245E52' } }; });
-    for (let row = 3; row <= sheet.rowCount; row++) for (let col = 3; col <= 8; col++) sheet.getCell(row, col).numFmt = '#,##0.00;[Red](#,##0.00);-';
-    const bytes = await workbook.xlsx.writeBuffer();
-    const url = URL.createObjectURL(new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
-    const link = document.createElement('a'); link.href = url; link.download = 'tax-comparison.xlsx'; link.click(); URL.revokeObjectURL(url);
+    setError('');
+    try {
+      if (!result.items.length) throw new Error('ไม่มีแถวผลเปรียบเทียบสำหรับส่งออก กรุณาเปรียบเทียบไฟล์ใหม่');
+      const ExcelJS = await import('exceljs');
+      const workbook = new ExcelJS.Workbook();
+      const sheet = workbook.addWorksheet('ผลเปรียบเทียบ');
+      sheet.addRow(['Tax Data Comparison', `${result.label_a} เทียบกับ ${result.label_b}`]);
+      sheet.addRow(['ชื่อผู้มีหน้าที่หัก', 'ประเภทเงินได้', `ยอดเงิน ${result.label_a}`, `ยอดเงิน ${result.label_b}`, 'ผลต่างเงินได้', `ภาษี ${result.label_a}`, `ภาษี ${result.label_b}`, 'ผลต่างภาษี', 'สถานะ']);
+      for (const item of result.items) sheet.addRow([item.payer, item.income_type, item.a_amount, item.b_amount, item.amount_diff, item.a_tax, item.b_tax, item.tax_diff, item.status]);
+      sheet.views = [{ state: 'frozen', ySplit: 2 }];
+      sheet.autoFilter = { from: 'A2', to: `I${sheet.rowCount}` };
+      sheet.columns.forEach((column) => { column.width = Math.min(34, Math.max(14, ...column.values!.map((value) => String(value ?? '').length + 2))); });
+      for (let rowNumber = 1; rowNumber <= 2; rowNumber++) sheet.getRow(rowNumber).eachCell((cell) => { cell.font = { bold: true, color: { argb: 'FFFFFFFF' } }; cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: rowNumber === 1 ? 'FF163B35' : 'FF245E52' } }; });
+      for (let row = 3; row <= sheet.rowCount; row++) for (let col = 3; col <= 8; col++) sheet.getCell(row, col).numFmt = '#,##0.00;[Red](#,##0.00);-';
+      const bytes = await workbook.xlsx.writeBuffer();
+      if (!bytes.byteLength) throw new Error('สร้างไฟล์ Excel ไม่สำเร็จ กรุณาลองอีกครั้ง');
+      const url = URL.createObjectURL(new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = 'tax-comparison.xlsx';
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'ส่งออกไฟล์ Excel ไม่สำเร็จ');
+    }
   }
   function drop(event: React.DragEvent, slot: 'a' | 'b') { event.preventDefault(); setDrag(null); const file = event.dataTransfer.files[0]; if (file) setFile(file, slot); }
   function setFile(file: File, slot: 'a' | 'b') { if (!file.name.toLowerCase().endsWith('.xlsx')) { setError('กรุณาเลือกไฟล์ Excel นามสกุล .xlsx'); return; } if (file.size > 20 * 1024 * 1024) { setError('ไฟล์ต้องมีขนาดไม่เกิน 20 MB'); return; } slot === 'a' ? setA(file) : setB(file); setResult(null); setError(''); }
