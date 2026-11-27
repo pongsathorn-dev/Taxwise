@@ -3,17 +3,19 @@ import { ArrowDownUp, ArrowRight, Check, ChevronDown, Download, FileSpreadsheet,
 import type * as ExcelJSTypes from 'exceljs';
 import { adminEmail, createNameRule, deleteNameRule, firebaseEnabled, signInOwner, signOutOwner, watchAuth, watchNameRules, type NameRule } from './firebase';
 
-type Item = { payer: string; income_type: string; a_amount: number; b_amount: number; amount_diff: number; a_tax: number; b_tax: number; tax_diff: number; status: string };
-type Result = { label_a: string; label_b: string; file_a: string; file_b: string; items: Item[] };
+type Item = { payer: string; income_type: string; a_count: number; b_count: number; amount_diff: number; tax_diff: number; a_amount: number; b_amount: number; a_tax: number; b_tax: number; status: string };
+type Result = { label_a: string; label_b: string; file_a: string; file_b: string; items: Item[]; groups_a: Group[]; groups_b: Group[]; rules: Rule[] };
 type Rule = NameRule;
-type Group = { payer: string; income: string; amount: number; tax: number; count: number };
+type Group = { payer: string; income: string; amount: number; tax: number; count: number; tins: string[] };
 const money = (n: number) => new Intl.NumberFormat('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n);
 const fmt = (n: number) => `${n < 0 ? '−' : ''}฿ ${money(Math.abs(n))}`;
 const aliases = {
   payer: ['ชื่อผู้มีหน้าที่หัก', 'ผู้มีหน้าที่หัก', 'ชื่อผู้จ่าย', 'ผู้จ่าย', 'payer', 'payer name', 'withholding agent', 'ชื่อผู้หักภาษี'],
   income: ['ประเภทเงินได้', 'ประเภทเงินได้พึงประเมิน', 'income type', 'type'],
-  amount: ['จำนวนเงิน', 'ยอดเงิน', 'มูลค่า', 'amount', 'income amount', 'ยอดเงินได้'],
-  tax: ['ภาษีหัก ณ ที่จ่าย', 'จำนวนภาษี', 'ภาษี', 'tax', 'withholding tax', 'tax amount'],
+  amount: ['จำนวนเงิน', 'ยอดเงิน', 'มูลค่า', 'amount', 'income amount', 'ยอดเงินได้', 'มูลค่ารวม'],
+  tax: ['ภาษีหัก ณ ที่จ่าย', 'จำนวนภาษี', 'ภาษี', 'tax', 'withholding tax', 'tax amount', 'ภาษีหัก ณ ที่จ่ายรวม'],
+  count: ['จำนวนรายการ', 'จำนวนครั้ง', 'จำนวนธุรกรรม', 'count', 'รายการ'],
+  tin: ['เลขประจำตัวผู้เสียภาษี', 'เลขประจำตัวผู้เสียภาษีอากร', 'เลขผู้เสียภาษี', 'เลขประจำตัว', 'tin', 'tax id', 'taxpayer id', 'tax identification number'],
 };
 const headerKey = (value: unknown) => String(value ?? '').replace(/[\s_-]+/g, '').trim().toLocaleLowerCase();
 function cleanCell(value: unknown): string {
@@ -61,10 +63,15 @@ async function readWorkbook(file: File): Promise<Group[]> {
     if (!payer && !income) continue;
     if (!payer || !income) throw new Error(`ไฟล์ ${file.name} แถว ${rowNo}: ต้องระบุชื่อผู้หักและประเภทเงินได้`);
     const key = `${payer.toLocaleLowerCase()}\u0000${income.toLocaleLowerCase()}`;
-    const group = groups.get(key) ?? { payer, income, amount: 0, tax: 0, count: 0 };
+    const group = groups.get(key) ?? { payer, income, amount: 0, tax: 0, count: 0, tins: [] };
     group.amount += amountValue(row.getCell(positions.amount).value, rowNo, 'จำนวนเงิน');
     group.tax += positions.tax ? amountValue(row.getCell(positions.tax).value, rowNo, 'ภาษี') : 0;
-    group.count += 1;
+    group.count += positions.count ? amountValue(row.getCell(positions.count).value, rowNo, 'จำนวนรายการ') : 1;
+    if (positions.tin) {
+      const tinCell = row.getCell(positions.tin);
+      const tin = (tinCell.text || cleanCell(tinCell.value)).trim();
+      if (tin && !group.tins.includes(tin)) group.tins.push(tin);
+    }
     groups.set(key, group);
   }
   if (!groups.size) throw new Error(`ไฟล์ ${file.name}: ไม่พบแถวข้อมูล`);
@@ -77,9 +84,10 @@ function compareWorkbooks(left: Group[], right: Group[], rules: Rule[]): Item[] 
     for (const group of groups) {
       const payer = replacements.get(group.payer.trim().toLocaleLowerCase()) ?? group.payer;
       const key = `${payer.toLocaleLowerCase()}\u0000${group.income.toLocaleLowerCase()}`;
-      const item = merged.get(key) ?? { payer, income_type: group.income, a_amount: 0, b_amount: 0, amount_diff: 0, a_tax: 0, b_tax: 0, tax_diff: 0, status: '', a_rows: 0, b_rows: 0 };
+      const item = merged.get(key) ?? { payer, income_type: group.income, a_count: 0, b_count: 0, a_amount: 0, b_amount: 0, amount_diff: 0, a_tax: 0, b_tax: 0, tax_diff: 0, status: '', a_rows: 0, b_rows: 0 };
       item[`${side}_amount`] += group.amount;
       item[`${side}_tax`] += group.tax;
+      item[`${side}_count`] += group.count;
       item[`${side}_rows`] += group.count;
       merged.set(key, item);
     }
@@ -90,6 +98,30 @@ function compareWorkbooks(left: Group[], right: Group[], rules: Rule[]): Item[] 
     item.status = Math.abs(item.amount_diff) < 0.005 && Math.abs(item.tax_diff) < 0.005 ? 'ตรงกัน' : (!item.a_rows ? 'พบเฉพาะชุด B' : (!item.b_rows ? 'พบเฉพาะชุด A' : 'ยอดไม่ตรงกัน'));
     return item;
   }).sort((a, b) => a.payer.localeCompare(b.payer, 'th') || a.income_type.localeCompare(b.income_type, 'th'));
+}
+function formLabel(file: File, fallback: string) {
+  const name = file.name.replace(/[\s._-]/g, '').toLocaleLowerCase();
+  if (name.includes('ภงด2ก') || /pnd2k/.test(name)) return 'ภงด2ก';
+  if (name.includes('ภงด2') || /pnd2(?!k)/.test(name)) return 'ภงด2';
+  return fallback;
+}
+function normalizedPayer(name: string, rules: Rule[]) {
+  return new Map(rules.map((rule) => [rule.source.trim().toLocaleLowerCase(), rule.target.trim()])).get(name.trim().toLocaleLowerCase()) ?? name;
+}
+function summarizeGroups(groups: Group[], rules: Rule[]) {
+  const summary = new Map<string, { payer: string; income: string; count: number; amount: number; tax: number; names: Set<string>; tins: Set<string> }>();
+  for (const group of groups) {
+    const payer = normalizedPayer(group.payer, rules);
+    const key = `${payer.toLocaleLowerCase()}\u0000${group.income.toLocaleLowerCase()}`;
+    const item = summary.get(key) ?? { payer, income: group.income, count: 0, amount: 0, tax: 0, names: new Set<string>(), tins: new Set<string>() };
+    item.count += group.count;
+    item.amount += group.amount;
+    item.tax += group.tax;
+    item.names.add(group.payer);
+    group.tins.forEach((tin) => item.tins.add(tin));
+    summary.set(key, item);
+  }
+  return [...summary.values()].sort((a, b) => a.payer.localeCompare(b.payer, 'th') || a.income.localeCompare(b.income, 'th'));
 }
 function App() {
   const [a, setA] = useState<File | null>(null), [b, setB] = useState<File | null>(null), [result, setResult] = useState<Result | null>(null), [rules, setRules] = useState<Rule[]>([]), [source, setSource] = useState(''), [target, setTarget] = useState(''), [busy, setBusy] = useState(false), [error, setError] = useState(''), [query, setQuery] = useState(''), [status, setStatus] = useState('ทั้งหมด'), [tab, setTab] = useState<'compare' | 'rules'>('compare'), [drag, setDrag] = useState<'a' | 'b' | null>(null), [ownerUser, setOwnerUser] = useState<import('firebase/auth').User | null>(null), [loginEmail, setLoginEmail] = useState(''), [loginPassword, setLoginPassword] = useState('');
@@ -104,7 +136,7 @@ function App() {
     setBusy(true); setError('');
     try {
       const [left, right] = await Promise.all([readWorkbook(a), readWorkbook(b)]);
-      setResult({ label_a: 'ชุด A', label_b: 'ชุด B', file_a: a.name, file_b: b.name, items: compareWorkbooks(left, right, rules) });
+      setResult({ label_a: formLabel(a, 'ชุด A'), label_b: formLabel(b, 'ชุด B'), file_a: a.name, file_b: b.name, items: compareWorkbooks(left, right, rules), groups_a: left, groups_b: right, rules: [...rules] });
     } catch (err) { setError(err instanceof Error ? err.message : 'อ่านไฟล์ไม่สำเร็จ'); }
     finally { setBusy(false); }
   }
@@ -132,15 +164,46 @@ function App() {
       if (!result.items.length) throw new Error('ไม่มีแถวผลเปรียบเทียบสำหรับส่งออก กรุณาเปรียบเทียบไฟล์ใหม่');
       const ExcelJS = await import('exceljs');
       const workbook = new ExcelJS.Workbook();
-      const sheet = workbook.addWorksheet('ผลเปรียบเทียบ');
-      sheet.addRow(['Tax Data Comparison', `${result.label_a} เทียบกับ ${result.label_b}`]);
-      sheet.addRow(['ชื่อผู้มีหน้าที่หัก', 'ประเภทเงินได้', `ยอดเงิน ${result.label_a}`, `ยอดเงิน ${result.label_b}`, 'ผลต่างเงินได้', `ภาษี ${result.label_a}`, `ภาษี ${result.label_b}`, 'ผลต่างภาษี', 'สถานะ']);
-      for (const item of result.items) sheet.addRow([item.payer, item.income_type, item.a_amount, item.b_amount, item.amount_diff, item.a_tax, item.b_tax, item.tax_diff, item.status]);
-      sheet.views = [{ state: 'frozen', ySplit: 2 }];
-      sheet.autoFilter = { from: 'A2', to: `I${sheet.rowCount}` };
-      sheet.columns.forEach((column) => { column.width = Math.min(34, Math.max(14, ...column.values!.map((value) => String(value ?? '').length + 2))); });
-      for (let rowNumber = 1; rowNumber <= 2; rowNumber++) sheet.getRow(rowNumber).eachCell((cell) => { cell.font = { bold: true, color: { argb: 'FFFFFFFF' } }; cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: rowNumber === 1 ? 'FF163B35' : 'FF245E52' } }; });
-      for (let row = 3; row <= sheet.rowCount; row++) for (let col = 3; col <= 8; col++) sheet.getCell(row, col).numFmt = '#,##0.00;[Red](#,##0.00);-';
+      const headerFont = { name: 'Tahoma', size: 11, bold: true, color: { argb: 'FFFFFFFF' } };
+      const dataFont = { name: 'Tahoma', size: 11, color: { argb: 'FF000000' } };
+      const headerFill = { type: 'pattern' as const, pattern: 'solid' as const, fgColor: { argb: 'FF1F4E78' } };
+      const moneyFormat = '#,##0.00;[Red]-#,##0.00;0.00';
+      function formatSheet(sheet: ExcelJSTypes.Worksheet, headers: string[], widths: number[], moneyColumns: number[]) {
+        sheet.addRow(headers);
+        sheet.columns.forEach((column, index) => { column.width = widths[index]; });
+        sheet.views = [{ state: 'frozen', ySplit: 1, topLeftCell: 'A2' }];
+        sheet.getRow(1).height = 32.1;
+        sheet.getRow(1).eachCell((cell) => {
+          cell.font = headerFont;
+          cell.fill = headerFill;
+          cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
+        });
+        for (let row = 2; row <= sheet.rowCount; row++) {
+          sheet.getRow(row).eachCell((cell) => {
+            cell.font = dataFont;
+            cell.alignment = { vertical: 'top', wrapText: true };
+          });
+          moneyColumns.forEach((column) => { sheet.getCell(row, column).numFmt = moneyFormat; });
+        }
+      }
+      const comparison = workbook.addWorksheet('เปรียบเทียบ');
+      formatSheet(comparison,
+        ['ชื่อผู้มีหน้าที่หัก (ชื่อมาตรฐาน)', 'ประเภทเงินได้', `สถานะใน ${result.label_a}`, `จำนวนรายการ ${result.label_a}`, `มูลค่า ${result.label_a}`, `ภาษี ${result.label_a}`, `สถานะใน ${result.label_b}`, `จำนวนรายการ ${result.label_b}`, `มูลค่า ${result.label_b}`, `ภาษี ${result.label_b}`, 'ผลการเปรียบเทียบ'],
+        [55, 45, 14, 18, 13, 12, 15, 19, 14, 12, 18], [5, 6, 9, 10]);
+      for (const item of result.items) {
+        const comparisonStatus = item.a_count === 0 ? `มีเฉพาะ ${result.label_b}` : item.b_count === 0 ? `มีเฉพาะ ${result.label_a}` : item.status === 'ตรงกัน' ? 'ไม่ต่างกัน' : 'ยอดไม่ตรงกัน';
+        comparison.addRow([item.payer, item.income_type, item.a_count ? 'มี' : 'ไม่มี', item.a_count, item.a_amount, item.a_tax, item.b_count ? 'มี' : 'ไม่มี', item.b_count, item.b_amount, item.b_tax, comparisonStatus]);
+        const statusCell = comparison.getCell(comparison.rowCount, 11);
+        statusCell.font = { name: 'Tahoma', size: 11, bold: true, color: { argb: comparisonStatus === 'ไม่ต่างกัน' ? 'FF006100' : 'FF9C0006' } };
+      }
+      const summaryHeaders = ['ชื่อผู้มีหน้าที่หัก (ชื่อมาตรฐาน)', 'ประเภทเงินได้', 'จำนวนรายการ', 'มูลค่ารวม', 'ภาษีหัก ณ ที่จ่ายรวม', 'ชื่อที่พบในต้นฉบับ', 'TIN ที่พบ'];
+      for (const [label, groups] of [[result.label_a, result.groups_a], [result.label_b, result.groups_b]] as const) {
+        const summary = workbook.addWorksheet(`สรุป_${label}`);
+        formatSheet(summary, summaryHeaders, [55, label === 'ภงด2ก' ? 22 : 45, 13, 12, 22, 55, 12], [4, 5]);
+        for (const item of summarizeGroups(groups, result.rules)) {
+          summary.addRow([item.payer, item.income, item.count, item.amount, item.tax, [...item.names].sort((a, b) => a.localeCompare(b, 'th')).join(' / '), [...item.tins].sort().join(', ')]);
+        }
+      }
       const bytes = await workbook.xlsx.writeBuffer();
       if (!bytes.byteLength) throw new Error('สร้างไฟล์ Excel ไม่สำเร็จ กรุณาลองอีกครั้ง');
       const url = URL.createObjectURL(new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
